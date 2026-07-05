@@ -80,39 +80,52 @@ impl<W: Write> ImplodeWriter<W> {
             self.initialize()?;
         }
 
-        // Move input data to work buffer
-        let input_len = self.input_buffer.len();
-        if input_len == 0 {
-            return Ok(());
-        }
+        loop {
+            // Move as much pending input as fits into the work buffer
+            let available_space = self.state.work_buff.len() - self.state.work_bytes;
+            let copy_len = self.input_buffer.len().min(available_space);
 
-        // Ensure we have space in work buffer
-        let available_space = self.state.work_buff.len() - self.state.work_bytes;
-        let copy_len = input_len.min(available_space);
+            if copy_len > 0 {
+                self.state.work_buff[self.state.work_bytes..self.state.work_bytes + copy_len]
+                    .copy_from_slice(&self.input_buffer[..copy_len]);
+                self.state.work_bytes += copy_len;
 
-        if copy_len > 0 {
-            self.state.work_buff[self.state.work_bytes..self.state.work_bytes + copy_len]
-                .copy_from_slice(&self.input_buffer[..copy_len]);
-            self.state.work_bytes += copy_len;
+                // Remove processed data from input buffer
+                self.input_buffer.drain(..copy_len);
+            }
 
-            // Remove processed data from input buffer
-            self.input_buffer.drain(..copy_len);
-        }
+            // Build hash table for the current buffer
+            if self.state.work_bytes > self.state.compressed_pos {
+                self.state.sort_buffer(0, self.state.work_bytes);
 
-        // Build hash table for the current buffer
-        if self.state.work_bytes > 1 {
-            self.state.sort_buffer(0, self.state.work_bytes);
+                // Compress the data
+                let start = self.state.compressed_pos;
+                self.compress_buffer(start)?;
+                self.state.compressed_pos = self.state.work_bytes;
+            }
 
-            // Compress the data
-            self.compress_buffer()?;
+            if self.input_buffer.is_empty() {
+                break;
+            }
+
+            // More input remains: slide the window to make room for it.
+            // This handles the case where work_buff was already full and compressed
+            // before entering this iteration (copy_len == 0 above).
+            let dict_len = (self.state.dsize_bytes as usize).min(self.state.work_bytes);
+            let work_bytes = self.state.work_bytes;
+            self.state
+                .work_buff
+                .copy_within(work_bytes - dict_len..work_bytes, 0);
+            self.state.work_bytes = dict_len;
+            self.state.compressed_pos = dict_len;
         }
 
         Ok(())
     }
 
-    /// Compress data in the work buffer
-    fn compress_buffer(&mut self) -> Result<()> {
-        let mut pos = 0;
+    /// Compress data in the work buffer starting at `start`
+    fn compress_buffer(&mut self, start: usize) -> Result<()> {
+        let mut pos = start;
 
         while pos < self.state.work_bytes.saturating_sub(1) {
             // Try to find a repetition at current position

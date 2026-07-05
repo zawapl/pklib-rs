@@ -91,6 +91,8 @@ impl<R: Read> ExplodeReader<R> {
             self.gen_asc_tabs();
         }
 
+        self.state.output_pos = 0x1000; // Initialize output buffer position
+
         self.initialized = true;
         Ok(())
     }
@@ -184,7 +186,6 @@ impl<R: Read> ExplodeReader<R> {
         }
 
         let mut bytes_written = 0;
-        self.state.output_pos = 0x1000; // Initialize output buffer position
 
         // Main decompression loop
         loop {
@@ -217,12 +218,17 @@ impl<R: Read> ExplodeReader<R> {
 
                     // Calculate source and target positions
                     let target_pos = self.state.output_pos;
-                    let source_pos = target_pos.saturating_sub(minus_dist as usize);
+                    let source_pos = match target_pos.checked_sub(minus_dist as usize) {
+                        Some(pos) => pos,
+                        None => {
+                            return Err(PkLibError::DecompressionError(
+                                "Invalid distance".to_string(),
+                            ));
+                        }
+                    };
 
                     // Bounds checking
-                    if source_pos >= self.state.out_buff.len()
-                        || target_pos + rep_length as usize > self.state.out_buff.len()
-                    {
+                    if target_pos + rep_length as usize > self.state.out_buff.len() {
                         return Err(PkLibError::DecompressionError(
                             "Buffer overflow".to_string(),
                         ));
@@ -230,12 +236,7 @@ impl<R: Read> ExplodeReader<R> {
 
                     // Copy the repeating sequence (may overlap)
                     for i in 0..rep_length as usize {
-                        if target_pos + i < self.state.out_buff.len()
-                            && source_pos + i < self.state.out_buff.len()
-                        {
-                            self.state.out_buff[target_pos + i] =
-                                self.state.out_buff[source_pos + i];
-                        }
+                        self.state.out_buff[target_pos + i] = self.state.out_buff[source_pos + i];
                     }
 
                     self.state.output_pos += rep_length as usize;
@@ -257,28 +258,17 @@ impl<R: Read> ExplodeReader<R> {
             // Flush output buffer when it reaches capacity
             if self.state.output_pos >= 0x2000 {
                 // Copy decompressed data from second half of buffer to output
-                let copy_start = 0x1000;
-                let copy_end = self.state.output_pos.min(0x2000);
-
-                if copy_end > copy_start {
-                    self.output_buffer
-                        .extend_from_slice(&self.state.out_buff[copy_start..copy_end]);
-                    bytes_written += copy_end - copy_start;
-                }
+                self.output_buffer.extend_from_slice(&self.state.out_buff[0x1000..0x2000]);
+                bytes_written += 0x1000;
 
                 // Move remaining data to first half (for repetition references)
-                let remaining_bytes = self.state.output_pos - 0x1000;
-                if remaining_bytes > 0 && remaining_bytes <= 0x1000 {
-                    self.state
-                        .out_buff
-                        .copy_within(0x1000..self.state.output_pos, 0);
-                }
-                self.state.output_pos = remaining_bytes;
+                let output_pos = self.state.output_pos;
+                self.state.out_buff.copy_within(0x1000..output_pos, 0);
+                self.state.output_pos -= 0x1000;
 
                 // Return what we have so far
-                if bytes_written > 0 {
-                    break;
-                }
+                // Decompression resumes on the next expand() call with the window state preserved.
+                break;
             }
         }
 

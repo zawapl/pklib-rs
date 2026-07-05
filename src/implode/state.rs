@@ -56,6 +56,8 @@ pub struct ImplodeState {
     pub input_pos: usize,
     /// Amount of data in work buffer
     pub work_bytes: usize,
+    /// How many bytes at the start of work_buff have already been compressed and emitted
+    pub compressed_pos: usize,
 }
 
 impl ImplodeState {
@@ -85,6 +87,7 @@ impl ImplodeState {
             work_pos: 0,
             input_pos: 0,
             work_bytes: 0,
+            compressed_pos: 0,
         };
 
         // Copy static tables
@@ -145,6 +148,7 @@ impl ImplodeState {
         self.work_pos = 0;
         self.input_pos = 0;
         self.work_bytes = 0;
+        self.compressed_pos = 0;
 
         // Clear buffers
         self.phash_to_index.fill(0);
