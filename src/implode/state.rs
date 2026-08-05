@@ -58,6 +58,9 @@ pub struct ImplodeState {
     pub work_bytes: usize,
     /// How many bytes at the start of work_buff have already been compressed and emitted
     pub compressed_pos: usize,
+    /// Number of byte-pair hash entries produced by the most recent `sort_buffer` call
+    /// (i.e. the end index, exclusive, of the last hash bucket in `phash_offs`)
+    pub pair_count: usize,
 }
 
 impl ImplodeState {
@@ -88,6 +91,7 @@ impl ImplodeState {
             input_pos: 0,
             work_bytes: 0,
             compressed_pos: 0,
+            pair_count: 0,
         };
 
         // Copy static tables
@@ -149,6 +153,7 @@ impl ImplodeState {
         self.input_pos = 0;
         self.work_bytes = 0;
         self.compressed_pos = 0;
+        self.pair_count = 0;
 
         // Clear buffers
         self.phash_to_index.fill(0);

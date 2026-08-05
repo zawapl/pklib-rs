@@ -243,7 +243,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // TODO: Fix after compression refactoring
     fn test_simple_match() {
         let mut state = ImplodeState::new(CompressionMode::Binary, DictionarySize::Size1K).unwrap();
 

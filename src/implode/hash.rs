@@ -12,8 +12,11 @@ impl ImplodeState {
     pub fn sort_buffer(&mut self, buffer_begin: usize, buffer_end: usize) {
         // Ensure we have at least 2 bytes for pair hash
         if buffer_end <= buffer_begin + 1 {
+            self.pair_count = 0;
             return;
         }
+
+        self.pair_count = buffer_end - buffer_begin - 1;
 
         // Step 1: Zero the hash-to-index table
         self.phash_to_index.fill(0);
@@ -56,58 +59,49 @@ impl ImplodeState {
         }
     }
 
-    /// Get the first occurrence index for a given hash value
-    pub fn get_hash_index(&self, hash: usize) -> Option<usize> {
-        if hash < HASH_TABLE_SIZE {
-            let index = self.phash_to_index[hash] as usize;
-            if index < self.phash_offs.len() && self.phash_offs[index] != 0 {
-                Some(index)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
-    /// Get the offset for a given index in the hash offset table
-    pub fn get_hash_offset(&self, index: usize) -> Option<usize> {
-        if index < self.phash_offs.len() {
-            let offset = self.phash_offs[index] as usize;
-            if offset > 0 {
-                Some(offset)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-
     /// Find all positions where a specific byte pair hash occurs
     pub fn find_hash_positions(&self, hash: usize, current_pos: usize) -> Vec<usize> {
         let mut positions = Vec::new();
 
-        if let Some(start_index) = self.get_hash_index(hash) {
-            let min_offset = current_pos.saturating_sub(self.dsize_bytes as usize);
+        if hash >= HASH_TABLE_SIZE {
+            return positions;
+        }
 
-            // Walk through all occurrences of this hash
-            for i in start_index..self.phash_offs.len() {
-                if let Some(offset) = self.get_hash_offset(i) {
-                    // Check if this offset is within our dictionary window
-                    if offset >= min_offset && offset < current_pos {
-                        positions.push(offset);
-                    } else if offset >= current_pos {
-                        // Offsets are sorted, so we can stop here
-                        break;
-                    }
-                } else {
-                    break; // No more valid offsets
-                }
+        let (start, end) = self.hash_bucket_range(hash);
+        let min_offset = current_pos.saturating_sub(self.dsize_bytes as usize);
+
+        // Offsets within a bucket are stored in ascending order of position.
+        for &raw_offset in &self.phash_offs[start..end] {
+            let offset = raw_offset as usize;
+            if offset >= min_offset && offset < current_pos {
+                positions.push(offset);
+            } else if offset >= current_pos {
+                // Offsets are sorted, so we can stop here
+                break;
             }
         }
 
         positions
+    }
+
+    /// Get the `[start, end)` range in `phash_offs` holding the occurrences of `hash`,
+    /// sorted in ascending order of position.
+    ///
+    /// After `sort_buffer` runs, `phash_to_index[hash]` is the start index of that hash's
+    /// bucket, and since buckets are laid out contiguously in cumulative-count order, the
+    /// bucket's end is simply the start of the next bucket (`phash_to_index[hash + 1]`), or
+    /// `pair_count` for the last bucket. Offset `0` is a legitimate position (the start of the
+    /// sliding window) and must not be treated as a "no data" sentinel, which is why this
+    /// (unlike the old implementation) never inspects the offset values themselves to decide
+    /// whether a bucket is valid.
+    fn hash_bucket_range(&self, hash: usize) -> (usize, usize) {
+        let start = self.phash_to_index[hash] as usize;
+        let end = if hash + 1 < HASH_TABLE_SIZE {
+            self.phash_to_index[hash + 1] as usize
+        } else {
+            self.pair_count
+        };
+        (start, end)
     }
 
     /// Update hash table incrementally for a new byte pair
@@ -166,7 +160,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // TODO: Fix after compression refactoring
     fn test_sort_buffer_basic() {
         let mut state = ImplodeState::new(CompressionMode::Binary, DictionarySize::Size1K).unwrap();
 
@@ -178,17 +171,12 @@ mod tests {
         // Sort the buffer
         state.sort_buffer(0, len);
 
-        // Verify hash table was built
         let hash_ab = byte_pair_hash(b"AB");
-        assert!(state.get_hash_index(hash_ab).is_some());
-
-        // Verify we can find positions
         let positions = state.find_hash_positions(hash_ab, len);
         assert!(!positions.is_empty());
     }
 
     #[test]
-    #[ignore] // TODO: Fix after compression refactoring
     fn test_hash_table_edge_cases() {
         let mut state = ImplodeState::new(CompressionMode::Binary, DictionarySize::Size1K).unwrap();
 
@@ -205,6 +193,7 @@ mod tests {
         state.sort_buffer(0, 2);
 
         let hash = byte_pair_hash(b"AB");
-        assert!(state.get_hash_index(hash).is_some());
+        let positions = state.find_hash_positions(hash, 2);
+        assert_eq!(positions, vec![0]);
     }
 }
